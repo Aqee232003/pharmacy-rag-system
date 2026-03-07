@@ -1,0 +1,37 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Environment
+.env
+*.env
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Uploads directory (user-uploaded files)
+uploads/
+
+# Data / model caches
+data/
+*.pkl
+*.pt
+*.bin
+*.safetensors
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
