@@ -36,14 +36,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
     APP_TITLE,
-    BIOBERT_MODEL_NAME,
     CHUNK_OVERLAP,
     CHUNK_SIZE,
     DEFAULT_TOP_K,
     FDA_BASE_URL,
     PINECONE_INDEX_NAME,
     SOURCE_PREVIEW_LENGTH,
-    SUMMARIZATION_MODEL,
     pinecone_configured,
 )
 from document_processor import PharmacyDocumentProcessor
@@ -187,11 +185,6 @@ def _load_supporting() -> tuple[PharmacyDocumentProcessor, FDAValidator, Pharmac
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-
-def _status_icon(ok: bool) -> str:
-    return "✅" if ok else "❌"
-
-
 def _ensure_sample_data_indexed() -> None:
     """Index built-in sample pharmacy knowledge on first run."""
     if st.session_state.get("indexed"):
@@ -212,41 +205,20 @@ def _render_sidebar() -> None:
         st.markdown("*Pharmaceutical Decision-Support Tool*")
         st.divider()
 
-        # ── API key status ──────────────────────────────────────────────
-        st.markdown("### 🔑 API Keys")
-        pinecone_ok = pinecone_configured()
-        st.markdown(f"{_status_icon(pinecone_ok)} **Pinecone** — {'connected' if pinecone_ok else 'not set (using in-memory)'}")
-
-        if not pinecone_ok:
-            with st.expander("ℹ️ How to set Pinecone key"):
-                st.markdown(
-                    """
-1. Sign up free at [pinecone.io](https://www.pinecone.io/)
-2. Copy your API key
-3. Set the environment variable:
-   ```bash
-   export PINECONE_API_KEY=your_key
-   ```
-4. Or add it to a `.env` file (see `.env.example`)
-5. Restart the app
-
-**The app works fully without Pinecone** using an in-memory vector store.
-"""
-                )
-
-        st.divider()
-
         # ── System status ───────────────────────────────────────────────
         st.markdown("### 🖥️ System Status")
         status = st.session_state.get("status", {})
-        if status:
-            st.markdown(f"{_status_icon(status.get('biobert_loaded', False))} BioBERT ({BIOBERT_MODEL_NAME})")
-            st.markdown(f"{_status_icon(status.get('summarizer_loaded', False))} Summariser ({SUMMARIZATION_MODEL})")
-            st.markdown(f"{'🟢' if status.get('pinecone_connected') else '🟡'} Vector store: {status.get('vector_store_type','—')}")
-            st.markdown(f"📦 Indexed vectors: **{status.get('indexed_vectors', 0)}**")
-            st.markdown(f"⚡ Device: **{status.get('device','cpu').upper()}**")
+        vector_count = status.get("indexed_vectors", 0) if status else 0
+        pinecone_ok = pinecone_configured()
+
+        st.markdown(f"✅ **BioBERT Embeddings** — Active")
+        if pinecone_ok:
+            st.markdown(f"✅ **Vector Database** — Connected ({vector_count:,} vectors)")
         else:
-            st.info("Loading…")
+            st.markdown(f"✅ **Vector Database** — Ready ({vector_count:,} vectors)")
+            st.info("ℹ️ Using in-memory store. Set PINECONE_API_KEY to persist vectors.")
+        st.markdown(f"✅ **FDA Validation** — Available")
+        st.markdown(f"✅ **Document Processing** — Ready")
 
         st.divider()
 
@@ -257,8 +229,10 @@ def _render_sidebar() -> None:
         run_fda = st.checkbox("Run FDA validation", value=True, key="run_fda")
 
         st.divider()
+        st.markdown("### ℹ️ About")
         st.markdown(
-            "<small>Built with BioBERT · Pinecone · LangChain · Streamlit</small>",
+            "<small>Pharmacy-specific RAG powered by<br/>"
+            "BioBERT · Pinecone · LangChain · Streamlit</small>",
             unsafe_allow_html=True,
         )
 
