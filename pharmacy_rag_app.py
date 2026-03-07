@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -367,10 +368,7 @@ def _render_result_entry(entry: dict) -> None:
     st.markdown(f"**❓ Query:** {entry['query']}")
 
     # ── Answer ──────────────────────────────────────────────────────────
-    st.markdown(
-        f'<div class="answer-box"><strong>💬 Answer</strong><br/><br/>{result["answer"]}</div>',
-        unsafe_allow_html=True,
-    )
+    st.success(f"💬 **Answer**\n\n{result['answer']}")
 
     # ── FDA Validation ──────────────────────────────────────────────────
     if fda_report:
@@ -394,8 +392,38 @@ def _render_result_entry(entry: dict) -> None:
 
     # ── Source chunks ───────────────────────────────────────────────────
     if show_sources and result.get("sources"):
-        with st.expander(f"📚 Sources ({len(result['sources'])} chunks retrieved)"):
-            for i, src in enumerate(result["sources"], 1):
+        sources = result["sources"]
+
+        # ── Result summary metrics ───────────────────────────────────────
+        top_score = max(src.get("score", 0) for src in sources)
+        relevance_emoji = "🟢" if top_score >= 0.75 else ("🟡" if top_score >= 0.50 else "🔴")
+        fda_conf = fda_report.get("confidence_score") if fda_report else None
+        fda_conf_pct = f"{fda_conf:.0%}" if fda_conf is not None else "N/A"
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Sources Found", len(sources))
+        m2.metric("Top Relevance", f"{relevance_emoji} {top_score * 100:.1f}%")
+        m3.metric("FDA Confidence", fda_conf_pct)
+
+        # ── Summary table ────────────────────────────────────────────────
+        st.markdown("#### 📋 Retrieved Sources")
+        table_rows = []
+        for i, src in enumerate(sources, 1):
+            score = src.get("score", 0)
+            rel_emoji = "🟢" if score >= 0.75 else ("🟡" if score >= 0.50 else "🔴")
+            table_rows.append({
+                "#": i,
+                "Source": src.get("source", "unknown"),
+                "Page": src.get("page", 0),
+                "Relevance": f"{rel_emoji} {score * 100:.1f}%",
+                "Key Finding": src["text"][:150] + ("…" if len(src["text"]) > 150 else ""),
+            })
+        df = pd.DataFrame(table_rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # ── Detailed expandable view ─────────────────────────────────────
+        with st.expander(f"📚 Full source texts ({len(sources)} chunks)"):
+            for i, src in enumerate(sources, 1):
                 score_pct = f"{src['score'] * 100:.1f}%"
                 source = src.get("source", "unknown")
                 page = src.get("page", 0)
