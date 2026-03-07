@@ -187,13 +187,10 @@ def _load_supporting() -> tuple[PharmacyDocumentProcessor, FDAValidator, Pharmac
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def _ensure_sample_data_indexed() -> None:
-    """Index built-in sample pharmacy knowledge on first run."""
+    """Initialize pipeline state on first run (no sample data loaded)."""
     if st.session_state.get("indexed"):
         return
-    kb: PharmacyKnowledgeBase = st.session_state["kb"]
     pipeline: PharmacyRAGPipeline = st.session_state["pipeline"]
-    chunks = kb.get_sample_data()
-    pipeline.index_documents(chunks)
     st.session_state["indexed"] = True
     st.session_state["status"] = pipeline.get_status()
 
@@ -286,15 +283,11 @@ def _render_upload_tab() -> None:
         kb: PharmacyKnowledgeBase = st.session_state["kb"]
         stats = kb.get_stats()
         st.markdown("#### 📊 Knowledge Base Stats")
-        st.metric("Total chunks", stats["total_chunks"])
-        st.metric("Sample data chunks", stats["sample_chunks"])
-        st.metric("Uploaded chunks", stats["uploaded_chunks"])
-        st.metric("Indexed files", stats["indexed_files"])
+        st.metric("Total Chunks", stats.get("uploaded_chunks", 0))
+        st.metric("Indexed Files", stats.get("indexed_files", 0))
 
-        if stats["topics"]:
-            st.markdown("**Topics covered:**")
-            for topic, count in sorted(stats["topics"].items()):
-                st.markdown(f"• {topic.replace('_', ' ').title()}: {count}")
+        if stats.get("uploaded_chunks", 0) == 0:
+            st.info("📄 Upload PDF files to build your knowledge base")
 
 
 # ── Query tab ────────────────────────────────────────────────────────────────
@@ -326,7 +319,12 @@ def _render_query_tab() -> None:
         st.rerun()
 
     if search_clicked and query.strip():
-        _run_query(query.strip())
+        kb: PharmacyKnowledgeBase = st.session_state["kb"]
+        stats = kb.get_stats()
+        if stats.get("uploaded_chunks", 0) == 0:
+            st.warning("⚠️ No documents uploaded yet. Please go to the **Upload Documents** tab to add PDF files before querying.")
+        else:
+            _run_query(query.strip())
 
     # ── Chat history ────────────────────────────────────────────────────
     for entry in reversed(st.session_state["chat_history"]):
