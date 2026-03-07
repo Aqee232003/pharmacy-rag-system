@@ -1,0 +1,554 @@
+"""
+pharmacy_rag_app.py — Main Streamlit Application.
+
+Professional pharmacy-themed UI for the RAG system:
+  • Document upload (PDF)
+  • Natural-language query with source citations
+  • FDA validation status indicators
+  • System status dashboard
+  • Sample demo questions
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+import streamlit as st
+from dotenv import load_dotenv
+
+# Load .env file if present (local development)
+load_dotenv()
+
+# ── Page config must come before any other Streamlit calls ──────────────────
+st.set_page_config(
+    page_title="🏥 Pharmacy RAG System",
+    page_icon="💊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ── Local imports ────────────────────────────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).parent))
+
+from config import (
+    APP_TITLE,
+    BIOBERT_MODEL_NAME,
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    DEFAULT_TOP_K,
+    FDA_BASE_URL,
+    PINECONE_INDEX_NAME,
+    SUMMARIZATION_MODEL,
+    pinecone_configured,
+)
+from document_processor import PharmacyDocumentProcessor
+from fda_validation import FDAValidator
+from knowledge_base import PharmacyKnowledgeBase
+from rag_pipeline import PharmacyRAGPipeline
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ── Custom CSS ───────────────────────────────────────────────────────────────
+PHARMACY_CSS = """
+<style>
+/* ── Colour palette ───────────────────────────────────────────────────── */
+:root {
+    --pharm-blue:   #1B4F72;
+    --pharm-teal:   #148F77;
+    --pharm-light:  #D6EAF8;
+    --pharm-warn:   #F39C12;
+    --pharm-danger: #C0392B;
+    --pharm-ok:     #27AE60;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────── */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, var(--pharm-blue) 0%, #154360 100%);
+    color: white;
+}
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p {
+    color: white !important;
+}
+
+/* ── Header banner ────────────────────────────────────────────────────── */
+.pharmacy-header {
+    background: linear-gradient(135deg, var(--pharm-blue) 0%, var(--pharm-teal) 100%);
+    color: white;
+    padding: 1.2rem 2rem;
+    border-radius: 10px;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.pharmacy-header h1 { margin: 0; font-size: 2rem; }
+.pharmacy-header p  { margin: 0.25rem 0 0; opacity: 0.9; font-size: 0.95rem; }
+
+/* ── Result cards ─────────────────────────────────────────────────────── */
+.result-card {
+    background: #F8FBFF;
+    border-left: 5px solid var(--pharm-teal);
+    border-radius: 6px;
+    padding: 1rem 1.2rem;
+    margin: 0.8rem 0;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.07);
+}
+.source-badge {
+    background: var(--pharm-light);
+    color: var(--pharm-blue);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin-right: 6px;
+}
+.score-badge {
+    background: #E8F8F5;
+    color: var(--pharm-teal);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+/* ── Status indicators ────────────────────────────────────────────────── */
+.status-ok     { color: var(--pharm-ok);     font-weight: 700; }
+.status-warn   { color: var(--pharm-warn);   font-weight: 700; }
+.status-error  { color: var(--pharm-danger); font-weight: 700; }
+
+/* ── Metric boxes ─────────────────────────────────────────────────────── */
+.metric-box {
+    background: white;
+    border: 1px solid #DEE2E6;
+    border-radius: 8px;
+    padding: 0.9rem;
+    text-align: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+.metric-box .value { font-size: 1.8rem; font-weight: 800; color: var(--pharm-blue); }
+.metric-box .label { font-size: 0.8rem;  color: #6C757D; margin-top: 2px; }
+
+/* ── Answer box ───────────────────────────────────────────────────────── */
+.answer-box {
+    background: linear-gradient(135deg, #F0FFF4 0%, #E8F8F5 100%);
+    border: 2px solid var(--pharm-teal);
+    border-radius: 8px;
+    padding: 1.2rem 1.5rem;
+    margin: 1rem 0;
+}
+</style>
+"""
+
+# ── Sample demo questions ────────────────────────────────────────────────────
+DEMO_QUESTIONS = [
+    "What are the side effects of metformin for type 2 diabetes?",
+    "How do ACE inhibitors work and what are their contraindications?",
+    "What drug interactions should I watch for with warfarin?",
+    "Explain the mechanism of action of proton pump inhibitors.",
+    "What are the risks of long-term NSAID use like ibuprofen?",
+    "How does BioBERT improve pharmaceutical information retrieval?",
+    "What is the antidote for acetaminophen overdose?",
+    "Describe the fluoroquinolone black-box warnings.",
+]
+
+# ── Session-state initialisation ─────────────────────────────────────────────
+
+def _init_session_state() -> None:
+    defaults: dict = {
+        "pipeline": None,
+        "kb": None,
+        "processor": None,
+        "validator": None,
+        "indexed": False,
+        "chat_history": [],
+        "status": {},
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+
+@st.cache_resource(show_spinner="🔬 Loading BioBERT & RAG pipeline…")
+def _load_pipeline() -> PharmacyRAGPipeline:
+    return PharmacyRAGPipeline()
+
+
+@st.cache_resource(show_spinner=False)
+def _load_supporting() -> tuple[PharmacyDocumentProcessor, FDAValidator, PharmacyKnowledgeBase]:
+    return PharmacyDocumentProcessor(), FDAValidator(), PharmacyKnowledgeBase()
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _status_icon(ok: bool) -> str:
+    return "✅" if ok else "❌"
+
+
+def _ensure_sample_data_indexed() -> None:
+    """Index built-in sample pharmacy knowledge on first run."""
+    if st.session_state.get("indexed"):
+        return
+    kb: PharmacyKnowledgeBase = st.session_state["kb"]
+    pipeline: PharmacyRAGPipeline = st.session_state["pipeline"]
+    chunks = kb.get_sample_data()
+    pipeline.index_documents(chunks)
+    st.session_state["indexed"] = True
+    st.session_state["status"] = pipeline.get_status()
+
+
+# ── Sidebar ──────────────────────────────────────────────────────────────────
+
+def _render_sidebar() -> None:
+    with st.sidebar:
+        st.markdown("## 💊 Pharmacy RAG")
+        st.markdown("*Pharmaceutical Decision-Support Tool*")
+        st.divider()
+
+        # ── API key status ──────────────────────────────────────────────
+        st.markdown("### 🔑 API Keys")
+        pinecone_ok = pinecone_configured()
+        st.markdown(f"{_status_icon(pinecone_ok)} **Pinecone** — {'connected' if pinecone_ok else 'not set (using in-memory)'}")
+
+        if not pinecone_ok:
+            with st.expander("ℹ️ How to set Pinecone key"):
+                st.markdown(
+                    """
+1. Sign up free at [pinecone.io](https://www.pinecone.io/)
+2. Copy your API key
+3. Set the environment variable:
+   ```bash
+   export PINECONE_API_KEY=your_key
+   ```
+4. Or add it to a `.env` file (see `.env.example`)
+5. Restart the app
+
+**The app works fully without Pinecone** using an in-memory vector store.
+"""
+                )
+
+        st.divider()
+
+        # ── System status ───────────────────────────────────────────────
+        st.markdown("### 🖥️ System Status")
+        status = st.session_state.get("status", {})
+        if status:
+            st.markdown(f"{_status_icon(status.get('biobert_loaded', False))} BioBERT ({BIOBERT_MODEL_NAME})")
+            st.markdown(f"{_status_icon(status.get('summarizer_loaded', False))} Summariser ({SUMMARIZATION_MODEL})")
+            st.markdown(f"{'🟢' if status.get('pinecone_connected') else '🟡'} Vector store: {status.get('vector_store_type','—')}")
+            st.markdown(f"📦 Indexed vectors: **{status.get('indexed_vectors', 0)}**")
+            st.markdown(f"⚡ Device: **{status.get('device','cpu').upper()}**")
+        else:
+            st.info("Loading…")
+
+        st.divider()
+
+        # ── Retrieval settings ──────────────────────────────────────────
+        st.markdown("### ⚙️ Settings")
+        top_k = st.slider("Top-K results", min_value=1, max_value=10, value=DEFAULT_TOP_K, key="top_k")
+        show_sources = st.checkbox("Show source chunks", value=True, key="show_sources")
+        run_fda = st.checkbox("Run FDA validation", value=True, key="run_fda")
+
+        st.divider()
+        st.markdown(
+            "<small>Built with BioBERT · Pinecone · LangChain · Streamlit</small>",
+            unsafe_allow_html=True,
+        )
+
+
+# ── Document upload tab ──────────────────────────────────────────────────────
+
+def _render_upload_tab() -> None:
+    st.markdown("### 📄 Upload Pharmaceutical Documents")
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        uploaded = st.file_uploader(
+            "Upload PDF files (drug labels, research papers, formularies)",
+            type=["pdf"],
+            accept_multiple_files=True,
+            key="pdf_uploader",
+        )
+
+        if uploaded:
+            processor: PharmacyDocumentProcessor = st.session_state["processor"]
+            pipeline: PharmacyRAGPipeline = st.session_state["pipeline"]
+            kb: PharmacyKnowledgeBase = st.session_state["kb"]
+
+            for file in uploaded:
+                with st.spinner(f"Processing {file.name}…"):
+                    # Write to temp file
+                    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                        tmp.write(file.read())
+                        tmp_path = tmp.name
+                    try:
+                        chunks = processor.process_file(tmp_path)
+                        if chunks:
+                            # Tag source
+                            for chunk in chunks:
+                                chunk["source"] = file.name
+                            n = pipeline.index_documents(chunks)
+                            kb.add_document(tmp_path)
+                            kb.add_chunks(chunks)
+                            st.success(f"✅ {file.name}: {len(chunks)} chunks indexed ({n} vectors stored)")
+                        else:
+                            st.warning(f"⚠️ {file.name}: no text extracted — is this a scanned PDF?")
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"❌ Error processing {file.name}: {exc}")
+                    finally:
+                        os.unlink(tmp_path)
+
+            st.session_state["status"] = pipeline.get_status()
+
+    with col2:
+        kb: PharmacyKnowledgeBase = st.session_state["kb"]
+        stats = kb.get_stats()
+        st.markdown("#### 📊 Knowledge Base Stats")
+        st.metric("Total chunks", stats["total_chunks"])
+        st.metric("Sample data chunks", stats["sample_chunks"])
+        st.metric("Uploaded chunks", stats["uploaded_chunks"])
+        st.metric("Indexed files", stats["indexed_files"])
+
+        if stats["topics"]:
+            st.markdown("**Topics covered:**")
+            for topic, count in sorted(stats["topics"].items()):
+                st.markdown(f"• {topic.replace('_', ' ').title()}: {count}")
+
+
+# ── Query tab ────────────────────────────────────────────────────────────────
+
+def _render_query_tab() -> None:
+    st.markdown("### 🔍 Pharmaceutical Query")
+
+    # ── Demo question buttons ───────────────────────────────────────────
+    with st.expander("💡 Sample questions (click to use)", expanded=False):
+        cols = st.columns(2)
+        for i, q in enumerate(DEMO_QUESTIONS):
+            if cols[i % 2].button(q, key=f"demo_{i}", use_container_width=True):
+                st.session_state["pending_query"] = q
+
+    # ── Query input ─────────────────────────────────────────────────────
+    default_query = st.session_state.pop("pending_query", "")
+    query = st.text_area(
+        "Enter your pharmaceutical question:",
+        value=default_query,
+        height=100,
+        placeholder="e.g. What are the side effects of metformin?",
+        key="query_input",
+    )
+
+    col_btn, col_clear = st.columns([1, 5])
+    search_clicked = col_btn.button("🔍 Search", type="primary", use_container_width=True)
+    if col_clear.button("🗑️ Clear history", use_container_width=False):
+        st.session_state["chat_history"] = []
+        st.rerun()
+
+    if search_clicked and query.strip():
+        _run_query(query.strip())
+
+    # ── Chat history ────────────────────────────────────────────────────
+    for entry in reversed(st.session_state["chat_history"]):
+        _render_result_entry(entry)
+
+
+def _run_query(query: str) -> None:
+    pipeline: PharmacyRAGPipeline = st.session_state["pipeline"]
+    validator: FDAValidator = st.session_state["validator"]
+    top_k: int = st.session_state.get("top_k", DEFAULT_TOP_K)
+    run_fda: bool = st.session_state.get("run_fda", True)
+
+    with st.spinner("🧬 Retrieving and generating answer…"):
+        result = pipeline.query(query, top_k=top_k)
+
+    fda_report: dict | None = None
+    if run_fda:
+        with st.spinner("🔬 Validating against FDA database…"):
+            try:
+                fda_report = validator.get_validation_report(result["answer"], query)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("FDA validation error: %s", exc)
+
+    entry = {
+        "query": query,
+        "result": result,
+        "fda_report": fda_report,
+    }
+    st.session_state["chat_history"].append(entry)
+    _render_result_entry(entry)
+
+
+def _render_result_entry(entry: dict) -> None:
+    result = entry["result"]
+    fda_report = entry.get("fda_report")
+    show_sources = st.session_state.get("show_sources", True)
+
+    st.markdown("---")
+    st.markdown(f"**❓ Query:** {entry['query']}")
+
+    # ── Answer ──────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div class="answer-box"><strong>💬 Answer</strong><br/><br/>{result["answer"]}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── FDA Validation ──────────────────────────────────────────────────
+    if fda_report:
+        status = fda_report.get("status", "unknown")
+        icon = {"verified": "✅", "partial": "⚠️", "unverified": "❌", "no_drugs_detected": "ℹ️"}.get(status, "ℹ️")
+        conf = fda_report.get("confidence_score", 0.0)
+
+        with st.expander(f"{icon} FDA Validation — confidence {conf:.0%}", expanded=(status != "verified")):
+            st.markdown(fda_report.get("message", ""))
+            per_drug = fda_report.get("drug_validations", [])
+            if per_drug:
+                for drug_info in per_drug:
+                    dname = drug_info["drug_name"]
+                    if drug_info["fda_verified"]:
+                        st.markdown(f"✅ **{dname}** — verified in FDA database")
+                        if drug_info.get("fda_description"):
+                            st.caption(drug_info["fda_description"])
+                    else:
+                        warning = drug_info.get("warning", "not found")
+                        st.markdown(f"⚠️ **{dname}** — {warning}")
+
+    # ── Source chunks ───────────────────────────────────────────────────
+    if show_sources and result.get("sources"):
+        with st.expander(f"📚 Sources ({len(result['sources'])} chunks retrieved)"):
+            for i, src in enumerate(result["sources"], 1):
+                score_pct = f"{src['score'] * 100:.1f}%"
+                source = src.get("source", "unknown")
+                page = src.get("page", 0)
+                st.markdown(
+                    f'<div class="result-card">'
+                    f'<span class="source-badge">#{i} · {source}</span>'
+                    f'<span class="source-badge">Page {page}</span>'
+                    f'<span class="score-badge">Relevance {score_pct}</span>'
+                    f"<p style='margin-top:0.6rem;font-size:0.9rem;'>{src['text'][:400]}…</p>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+    elif result["num_results"] == 0:
+        st.info("No relevant chunks found. Try rephrasing your question or upload more documents.")
+
+
+# ── About tab ────────────────────────────────────────────────────────────────
+
+def _render_about_tab() -> None:
+    st.markdown("### ℹ️ About This System")
+
+    st.markdown(
+        """
+This system implements a **pharmacy-specific Retrieval-Augmented Generation (RAG)**
+pipeline described in the research paper:
+
+> *"Pharmacy-Specific Summarization Using Retrieval-Augmented Generation (RAG)"*
+
+#### 🏗️ Architecture
+
+```
+User Query
+    │
+    ▼
+Streamlit UI  ──────────────────────────────────────────┐
+    │                                                   │
+    ▼                                                   │
+BioBERT Query Embedding                                 │
+(dmis-lab/biobert-v1.1)                                │
+    │                                                   │
+    ▼                                                   │
+Pinecone Vector Search                                  │
+(Dense Passage Retrieval)                               │
+    │                                                   │
+    ▼                                                   │
+Top-K Relevant Chunks                                   │
+    │                                                   │
+    ▼                                                   │
+BART Summarisation / Extractive Fallback                │
+    │                                                   │
+    ▼                                                   │
+FDA Validation (openFDA API)                            │
+    │                                                   │
+    ▼                                                   │
+Display Answer + Citations ◄──────────────────────────┘
+```
+
+#### 🔬 Technology Stack
+
+| Component | Technology |
+|---|---|
+| UI | Streamlit |
+| Embeddings | BioBERT (dmis-lab/biobert-v1.1) |
+| Retrieval | Dense Passage Retrieval (cosine similarity) |
+| Vector DB | Pinecone (in-memory fallback) |
+| Generation | facebook/bart-large-cnn |
+| FDA Validation | openFDA REST API (free) |
+| Document Loading | LangChain + PyPDF |
+| Deployment | Google Colab + ngrok |
+
+#### 📖 References
+
+1. Lewis, P. et al. (2020). *Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks.* NeurIPS.
+2. Lee, J. et al. (2020). *BioBERT: a pre-trained biomedical language representation model.* Bioinformatics.
+3. Karpukhin, V. et al. (2020). *Dense Passage Retrieval for Open-Domain Question Answering.* EMNLP.
+4. Lewis, M. et al. (2020). *BART: Denoising Sequence-to-Sequence Pre-training.* ACL.
+5. openFDA API Documentation. U.S. Food & Drug Administration. https://open.fda.gov/apis/
+"""
+    )
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    _init_session_state()
+
+    # Inject CSS
+    st.markdown(PHARMACY_CSS, unsafe_allow_html=True)
+
+    # ── Header ──────────────────────────────────────────────────────────
+    st.markdown(
+        """
+<div class="pharmacy-header">
+  <h1>🏥 Pharmacy-Specific RAG System</h1>
+  <p>AI-powered pharmaceutical decision support · BioBERT · Pinecone · FDA Validated</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # ── Load components ─────────────────────────────────────────────────
+    if st.session_state["pipeline"] is None:
+        pipeline = _load_pipeline()
+        st.session_state["pipeline"] = pipeline
+
+    if st.session_state["processor"] is None:
+        processor, validator, kb = _load_supporting()
+        st.session_state["processor"] = processor
+        st.session_state["validator"] = validator
+        st.session_state["kb"] = kb
+
+    _ensure_sample_data_indexed()
+
+    # ── Sidebar ─────────────────────────────────────────────────────────
+    _render_sidebar()
+
+    # ── Tabs ─────────────────────────────────────────────────────────────
+    tab_query, tab_upload, tab_about = st.tabs(["🔍 Query", "📄 Documents", "ℹ️ About"])
+
+    with tab_query:
+        _render_query_tab()
+
+    with tab_upload:
+        _render_upload_tab()
+
+    with tab_about:
+        _render_about_tab()
+
+
+if __name__ == "__main__":
+    main()
