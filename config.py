@@ -23,7 +23,7 @@ CHUNK_OVERLAP = 200
 MIN_CHUNK_LENGTH = 50            # Discard chunks shorter than this
 
 # ─── Pinecone ─────────────────────────────────────────────────────────────────
-PINECONE_INDEX_NAME = "pharmacy-rag"
+PINECONE_INDEX_NAME = "pharmacy-index"
 PINECONE_METRIC = "cosine"
 PINECONE_CLOUD = "aws"
 PINECONE_REGION = "us-east-1"
