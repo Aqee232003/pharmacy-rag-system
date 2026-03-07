@@ -9,7 +9,7 @@ external PDFs or Pinecone.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -216,7 +216,7 @@ class PharmacyKnowledgeBase:
     def __init__(self) -> None:
         self._documents: list[dict[str, Any]] = []
         self._indexed_files: list[dict[str, Any]] = []
-        self._created_at = datetime.utcnow()
+        self._created_at = datetime.now(timezone.utc)
 
         # Create upload directory if it doesn't exist
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -244,7 +244,7 @@ class PharmacyKnowledgeBase:
             "path": str(doc_path),
             "name": doc_path.name,
             "size_kb": round(doc_path.stat().st_size / 1024, 1),
-            "added_at": datetime.utcnow().isoformat(),
+            "added_at": datetime.now(timezone.utc).isoformat(),
         }
         self._indexed_files.append(entry)
         logger.info("Registered document: %s", doc_path.name)

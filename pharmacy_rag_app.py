@@ -42,6 +42,7 @@ from config import (
     DEFAULT_TOP_K,
     FDA_BASE_URL,
     PINECONE_INDEX_NAME,
+    SOURCE_PREVIEW_LENGTH,
     SUMMARIZATION_MODEL,
     pinecone_configured,
 )
@@ -429,7 +430,7 @@ def _render_result_entry(entry: dict) -> None:
                     f'<span class="source-badge">#{i} · {source}</span>'
                     f'<span class="source-badge">Page {page}</span>'
                     f'<span class="score-badge">Relevance {score_pct}</span>'
-                    f"<p style='margin-top:0.6rem;font-size:0.9rem;'>{src['text'][:400]}…</p>"
+                    f"<p style='margin-top:0.6rem;font-size:0.9rem;'>{src['text'][:SOURCE_PREVIEW_LENGTH]}…</p>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )

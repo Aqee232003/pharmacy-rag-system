@@ -29,6 +29,11 @@ PINECONE_CLOUD = "aws"
 PINECONE_REGION = "us-east-1"
 PINECONE_NAMESPACE = "pharmacy-docs"
 
+# ─── Metadata / display limits ────────────────────────────────────────────────
+PINECONE_METADATA_TEXT_LIMIT = 1000  # Max characters stored in Pinecone metadata field
+CHARS_PER_TOKEN = 4                  # Approximate character-to-token ratio for BART truncation
+SOURCE_PREVIEW_LENGTH = 400          # Characters shown per source chunk in the UI
+
 # ─── Retrieval ────────────────────────────────────────────────────────────────
 DEFAULT_TOP_K = 5
 SIMILARITY_THRESHOLD = 0.3       # Minimum cosine similarity to include a result

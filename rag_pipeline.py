@@ -23,6 +23,7 @@ import numpy as np
 
 from config import (
     BIOBERT_MODEL_NAME,
+    CHARS_PER_TOKEN,
     DEFAULT_TOP_K,
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_DIMENSION,
@@ -32,6 +33,7 @@ from config import (
     MIN_OUTPUT_TOKENS,
     PINECONE_CLOUD,
     PINECONE_INDEX_NAME,
+    PINECONE_METADATA_TEXT_LIMIT,
     PINECONE_METRIC,
     PINECONE_NAMESPACE,
     PINECONE_REGION,
@@ -297,7 +299,7 @@ class PharmacyRAGPipeline:
                     for k, v in chunk.items()
                     if k not in ("text",) and isinstance(v, (str, int, float, bool))
                 }
-                meta["text"] = text[:1000]   # Pinecone metadata value limit
+                meta["text"] = text[:PINECONE_METADATA_TEXT_LIMIT]
 
                 vectors.append({"id": chunk_id, "values": embedding, "metadata": meta})
 
@@ -400,8 +402,8 @@ class PharmacyRAGPipeline:
 
         if self._summarizer is not None:
             try:
-                # Truncate to model max tokens
-                truncated = prompt[:MAX_INPUT_TOKENS * 4]   # rough char estimate
+                # Truncate to model's approximate token budget (CHARS_PER_TOKEN chars ≈ 1 token)
+                truncated = prompt[:MAX_INPUT_TOKENS * CHARS_PER_TOKEN]
                 result = self._summarizer(
                     truncated,
                     max_length=MAX_OUTPUT_TOKENS,
