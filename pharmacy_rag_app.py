@@ -367,24 +367,35 @@ def _render_document_analysis(da:dict)->None:
     st.markdown("### 📝 Structured Summary (BioBERT RAG)")
     bullets = da.get("bullets",[])
     if bullets:
-        # Group bullets by category
         from collections import defaultdict
+
+        # ── Clean paragraph summary (top 3 most relevant sentences) ──
+        top3 = sorted(bullets, key=lambda x: x["relevance"], reverse=True)[:3]
+        para_sentences = [re.sub(r"\*\*(.+?)\*\*", r"\1", b["raw"] if b.get("raw") else b["text"]) for b in top3]
+        paragraph = ". ".join(s.strip().rstrip(".") for s in para_sentences if s.strip()) + "."
+        st.markdown(
+            f'<div style="background:#1a3a2a;border-left:5px solid #2ecc71;border-radius:8px;'
+            f'padding:1.2rem 1.5rem;margin:.5rem 0 1rem 0;font-size:1rem;line-height:1.7;'
+            f'color:#e8f8f0;">{paragraph}</div>',
+            unsafe_allow_html=True)
+
+        # ── Grouped detailed findings inside expander ──
         grouped = defaultdict(list)
         for b in bullets:
             grouped[b.get("category","📄 General Info")].append(b)
 
-        # Render each category as a section
-        for category, items in grouped.items():
-            st.markdown(f"**{category}**")
-            for b in items:
-                em = "🟢" if b["score"]>=75 else("🟡" if b["score"]>=50 else "🔴")
-                st.markdown(
-                    f'<div class="bullet-point">'
-                    f'&nbsp;&nbsp;• {b["text"]}<br/>'
-                    f'<small>{em} Relevance: {b["score"]}% &nbsp;|&nbsp; '
-                    f'📄 {b["source"]} &nbsp;|&nbsp; Page {b["page"]}</small></div>',
-                    unsafe_allow_html=True)
-        st.caption(f"📊 {len(bullets)} findings across {len(grouped)} categories · Source: BioBERT RAG")
+        with st.expander(f"🔍 View Detailed Findings ({len(bullets)} findings · {len(grouped)} categories)", expanded=False):
+            for category, items in grouped.items():
+                st.markdown(f"**{category}**")
+                for b in items:
+                    em = "🟢" if b["score"]>=75 else("🟡" if b["score"]>=50 else "🔴")
+                    raw_text = re.sub(r"\*\*(.+?)\*\*", r"\1", b["text"])
+                    st.markdown(
+                        f'<div class="bullet-point">'
+                        f'&nbsp;&nbsp;• {raw_text}<br/>'
+                        f'<small>{em} Relevance: {b["score"]}% &nbsp;|&nbsp; '
+                        f'📄 {b["source"]} &nbsp;|&nbsp; Page {b["page"]}</small></div>',
+                        unsafe_allow_html=True)
     else:
         st.info("No structured summary available.")
 
