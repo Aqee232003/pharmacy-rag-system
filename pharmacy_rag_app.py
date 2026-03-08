@@ -153,27 +153,72 @@ def _compute_metrics(sources:list,summary:str,fda_report:dict|None)->dict:
             "Hallucination Rate":halluc,"Source-Backed":100 if sources else 0}
 
 
+# Category keywords for structured classification
+_SUMMARY_CATEGORIES = {
+    "💊 Drug / Mechanism":    ["mechanism","action","inhibit","receptor","enzyme","binding","pathway","pharmacodynamics","activat"],
+    "⚠️ Side Effects":        ["side effect","adverse","nausea","vomiting","diarrhea","headache","dizziness","toxicity","hepato","nephro"],
+    "🚫 Contraindications":   ["contraindic","avoid","do not","warning","pregnancy","renal impair","hepatic","black-box","caution"],
+    "💉 Dosage / Admin":      ["dose","dosage","mg","administration","oral","intravenous","twice","once daily","kg","regimen"],
+    "🔗 Drug Interactions":   ["interaction","combined","concurrent","inhibitor","CYP","displacement","potentiate","additive"],
+    "🏥 Indications":         ["indicated","used for","treat","therapy","condition","disease","diabetes","hypertension","infection"],
+    "🔬 Pharmacokinetics":    ["absorption","distribution","metabolism","excretion","half-life","bioavailability","clearance","plasma"],
+    "📋 Clinical Notes":      ["monitor","INR","blood test","serum","level","check","follow-up","patient","clinical"],
+}
+
+def _classify_sentence(sent: str) -> str:
+    sl = sent.lower()
+    for cat, keywords in _SUMMARY_CATEGORIES.items():
+        if any(kw in sl for kw in keywords):
+            return cat
+    return "📄 General Info"
+
+
 def _generate_structured_summary(sources:list,query:str)->list:
-    bullets,seen = [],set()
+    """
+    Generate structured summary with categories:
+    💊 Drug/Mechanism | ⚠️ Side Effects | 🚫 Contraindications | etc.
+    """
+    bullets, seen = [], set()
+    q_words = set(query.lower().split())
+
     for src in sources:
         text  = src.get("text","")
         score = src.get("score",0)
         page  = src.get("page",0)
         fname = src.get("source","unknown")
-        sents = [s.strip() for s in re.split(r'[.!?]',text) if len(s.strip())>40]
-        q_words = set(query.lower().split())
-        for sent in sents[:3]:
+
+        # Split into meaningful sentences
+        sents = [s.strip() for s in re.split(r'[.!?]', text) if len(s.strip()) > 40]
+
+        for sent in sents[:4]:
             if sent in seen: continue
             seen.add(sent)
+
+            # Relevance score
             s_words = set(sent.lower().split())
-            overlap = len(q_words & s_words)/(len(q_words)+1)
+            overlap = len(q_words & s_words) / (len(q_words) + 1)
+
+            # Highlight medical terms
             hl = sent
             for term in MEDICAL_TERMS_LIST:
-                hl = re.sub(r'\b'+re.escape(term)+r'\b',f"**{term}**",hl,flags=re.IGNORECASE)
-            bullets.append({"text":hl,"source":fname,"page":page,
-                            "score":round(score*100,1),"relevance":overlap})
-    bullets.sort(key=lambda x:x["relevance"],reverse=True)
-    return bullets[:8]
+                hl = re.sub(r'\b' + re.escape(term) + r'\b', f"**{term}**", hl, flags=re.IGNORECASE)
+
+            # Classify into category
+            category = _classify_sentence(sent)
+
+            bullets.append({
+                "text":     hl,
+                "raw":      sent,
+                "source":   fname,
+                "page":     page,
+                "score":    round(score * 100, 1),
+                "relevance": overlap,
+                "category": category,
+            })
+
+    # Sort by relevance
+    bullets.sort(key=lambda x: x["relevance"], reverse=True)
+    return bullets[:12]
 
 
 def _init_session_state()->None:
@@ -322,13 +367,24 @@ def _render_document_analysis(da:dict)->None:
     st.markdown("### 📝 Structured Summary (BioBERT RAG)")
     bullets = da.get("bullets",[])
     if bullets:
+        # Group bullets by category
+        from collections import defaultdict
+        grouped = defaultdict(list)
         for b in bullets:
-            em = "🟢" if b["score"]>=75 else("🟡" if b["score"]>=50 else "🔴")
-            st.markdown(
-                f'<div class="bullet-point">• {b["text"]}<br/>'
-                f'<small>{em} Relevance: {b["score"]}% &nbsp;|&nbsp; '
-                f'📄 {b["source"]} &nbsp;|&nbsp; Page {b["page"]}</small></div>',
-                unsafe_allow_html=True)
+            grouped[b.get("category","📄 General Info")].append(b)
+
+        # Render each category as a section
+        for category, items in grouped.items():
+            st.markdown(f"**{category}**")
+            for b in items:
+                em = "🟢" if b["score"]>=75 else("🟡" if b["score"]>=50 else "🔴")
+                st.markdown(
+                    f'<div class="bullet-point">'
+                    f'&nbsp;&nbsp;• {b["text"]}<br/>'
+                    f'<small>{em} Relevance: {b["score"]}% &nbsp;|&nbsp; '
+                    f'📄 {b["source"]} &nbsp;|&nbsp; Page {b["page"]}</small></div>',
+                    unsafe_allow_html=True)
+        st.caption(f"📊 {len(bullets)} findings across {len(grouped)} categories · Source: BioBERT RAG")
     else:
         st.info("No structured summary available.")
 
@@ -652,12 +708,19 @@ def _render_query_result(entry:dict)->None:
     bullets=_generate_structured_summary(sources,entry["query"])
     if bullets:
         st.markdown("#### 📝 Structured Summary")
+        from collections import defaultdict
+        grouped = defaultdict(list)
         for b in bullets:
-            em="🟢" if b["score"]>=75 else("🟡" if b["score"]>=50 else "🔴")
-            st.markdown(
-                f'<div class="bullet-point">• {b["text"]}<br/>'
-                f'<small>{em} {b["score"]}% · Page {b["page"]}</small></div>',
-                unsafe_allow_html=True)
+            grouped[b.get("category","📄 General Info")].append(b)
+        for category, items in grouped.items():
+            st.markdown(f"**{category}**")
+            for b in items:
+                em="🟢" if b["score"]>=75 else("🟡" if b["score"]>=50 else "🔴")
+                st.markdown(
+                    f'<div class="bullet-point">'
+                    f'&nbsp;&nbsp;• {b["text"]}<br/>'
+                    f'<small>{em} {b["score"]}% · 📄 {b["source"]} · Page {b["page"]}</small></div>',
+                    unsafe_allow_html=True)
 
     if sources:
         st.markdown("#### 📋 Retrieved Sources")
