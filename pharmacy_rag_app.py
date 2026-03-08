@@ -369,10 +369,52 @@ def _render_document_analysis(da:dict)->None:
     if bullets:
         from collections import defaultdict
 
-        # ── Clean paragraph summary (top 3 most relevant sentences) ──
-        top3 = sorted(bullets, key=lambda x: x["relevance"], reverse=True)[:3]
-        para_sentences = [re.sub(r"\*\*(.+?)\*\*", r"\1", b["raw"] if b.get("raw") else b["text"]) for b in top3]
-        paragraph = ". ".join(s.strip().rstrip(".") for s in para_sentences if s.strip()) + "."
+        # ── AI-generated paragraph summary via Claude API ──
+        def _generate_ai_summary(bullets_list, doc_filename):
+            try:
+                import requests as req
+                # Collect top content from bullets
+                top_bullets = sorted(bullets_list, key=lambda x: x["relevance"], reverse=True)[:8]
+                content_text = " ".join([
+                    re.sub(r"\*\*(.+?)\*\*", r"\1", b.get("raw") or b["text"])
+                    for b in top_bullets
+                ])
+                prompt = f"""You are a pharmaceutical expert. Based on the following extracted content from a research document, write a clear, detailed, professional summary paragraph (4-6 sentences) that a non-technical reader can understand.
+
+Focus on:
+- What drug/topic is being discussed
+- Key mechanisms or effects
+- Important clinical findings
+- Any notable benefits or risks
+
+Extracted content:
+{content_text[:3000]}
+
+Write ONLY the summary paragraph, no headings or bullet points."""
+
+                response = req.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "model": "claude-sonnet-4-20250514",
+                        "max_tokens": 300,
+                        "messages": [{"role": "user", "content": prompt}]
+                    },
+                    timeout=20
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    return data["content"][0]["text"].strip()
+            except Exception as e:
+                logger.warning("AI summary error: %s", e)
+            # Fallback: join top sentences cleanly
+            top3 = sorted(bullets_list, key=lambda x: x["relevance"], reverse=True)[:3]
+            sentences = [re.sub(r"\*\*(.+?)\*\*", r"\1", b.get("raw") or b["text"]) for b in top3]
+            return ". ".join(s.strip().rstrip(".") for s in sentences if s.strip()) + "."
+
+        with st.spinner("✍️ Generating AI summary..."):
+            paragraph = _generate_ai_summary(bullets, da["filename"])
+
         st.markdown(
             f'<div style="background:#1a3a2a;border-left:5px solid #2ecc71;border-radius:8px;'
             f'padding:1.2rem 1.5rem;margin:.5rem 0 1rem 0;font-size:1rem;line-height:1.7;'
