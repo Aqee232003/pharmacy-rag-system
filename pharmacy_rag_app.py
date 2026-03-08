@@ -68,14 +68,30 @@ PHARMACY_CSS = """
 .pharmacy-header h1{margin:0;font-size:2rem;}
 .pharmacy-header p{margin:.25rem 0 0;opacity:.9;font-size:.95rem;}
 .bullet-point {
-    background:#F0FFF4; border-left:4px solid var(--pharm-teal);
-    border-radius:4px; padding:.7rem 1rem; margin:.4rem 0; font-size:.92rem;
+    background:#1a3a2a;
+    border-left:4px solid #2ecc71;
+    border-radius:4px;
+    padding:.8rem 1rem;
+    margin:.4rem 0;
+    font-size:.93rem;
+    color:#e8f8f0 !important;
+}
+.bullet-point b, .bullet-point strong {
+    color:#7dffb3 !important;
+}
+.bullet-point small {
+    color:#a8d8b8 !important;
 }
 .result-card {
-    background:#F8FBFF; border-left:5px solid var(--pharm-teal);
-    border-radius:6px; padding:1rem 1.2rem; margin:.8rem 0;
-    box-shadow:0 2px 6px rgba(0,0,0,.07);
+    background:#1a2a3a;
+    border-left:5px solid var(--pharm-teal);
+    border-radius:6px;
+    padding:1rem 1.2rem;
+    margin:.8rem 0;
+    color:#d0e8f8 !important;
 }
+.result-card b { color:#7dd4f8 !important; }
+.result-card p { color:#c0d8e8 !important; }
 </style>
 """
 
@@ -178,11 +194,6 @@ def _load_supporting():
 
 def _ensure_sample_data_indexed()->None:
     if st.session_state.get("indexed"): return
-    try:
-        chunks = st.session_state["kb"].get_sample_data()
-        if chunks: st.session_state["pipeline"].index_documents(chunks)
-    except Exception as e:
-        logger.warning("Sample data skip: %s",e)
     st.session_state["indexed"] = True
     st.session_state["status"]  = st.session_state["pipeline"].get_status()
 
