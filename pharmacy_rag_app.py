@@ -43,6 +43,8 @@ from document_processor import PharmacyDocumentProcessor
 from fda_validation import FDAValidator
 from knowledge_base import PharmacyKnowledgeBase
 from rag_pipeline import PharmacyRAGPipeline
+from plagiarism_checker import compute_plagiarism_score, extract_references, validate_doi, generate_citation
+from report_generator import generate_excel_report
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -226,10 +228,33 @@ def _render_sidebar()->None:
 
 def _analyse_document(filename,chunks,pipeline,validator)->None:
     top_k = st.session_state.get("top_k",DEFAULT_TOP_K)
-    query = f"Main topics drug information side effects {filename}"
+
+    # Document ke actual content se query banao
+    all_text_preview = " ".join(c.get("text","") for c in chunks[:10])
+
+    # Drug names extract karo
+    drug_names_q = []
+    if hasattr(validator,"extract_drug_names"):
+        drug_names_q = validator.extract_drug_names(all_text_preview[:2000])[:5]
+
+    # Medical terms extract karo
+    med_terms_q = []
+    if hasattr(validator,"extract_medical_terms"):
+        med_terms_q = validator.extract_medical_terms(all_text_preview)[:3]
+
+    # Smart query from actual content
+    content_preview = all_text_preview[:300].replace(chr(10)," ").strip()
+    query_parts = [content_preview]
+    if drug_names_q:
+        query_parts.append("drugs: " + ", ".join(drug_names_q))
+    if med_terms_q:
+        query_parts.append("terms: " + ", ".join(med_terms_q))
+    query = " ".join(query_parts)[:500]
+
     result  = pipeline.query(query,top_k=top_k)
     sources = result.get("sources",[])
     answer  = result.get("answer","")
+    all_text = " ".join(c.get("text","") for c in chunks[:20])
 
     fda_report = None
     if st.session_state.get("run_fda",True):
@@ -252,13 +277,37 @@ def _analyse_document(filename,chunks,pipeline,validator)->None:
     crossref_refs   = fda_report.get("crossref_refs",[])   if fda_report else []
     pubmed_articles = fda_report.get("pubmed_articles",[]) if fda_report else []
 
+    # Plagiarism check
+    plagiarism = {}
+    try:
+        plagiarism = compute_plagiarism_score(chunks, filename)
+    except Exception as e:
+        logger.warning("Plagiarism check error: %s", e)
+
+    # Reference extraction + DOI validation
+    reference_check = []
+    try:
+        raw_refs = extract_references(all_text)
+        for ref in raw_refs[:10]:
+            if ref.get("doi"):
+                validated = validate_doi(ref["doi"])
+                validated["raw"] = ref.get("raw","")
+                reference_check.append(validated)
+            else:
+                reference_check.append({"raw":ref.get("raw",""),"doi":"",
+                                         "valid":False,"title":"","authors":"",
+                                         "year":ref.get("year",""),"error":"No DOI"})
+    except Exception as e:
+        logger.warning("Reference check error: %s", e)
+
     da = {"filename":filename,"num_chunks":len(chunks),"top_score":top_score,
           "medical_terms_count":len(medical_terms),"medical_terms":medical_terms,
           "fda_status":fda_status,"fda_report":fda_report,
           "pubmed_count":len(pubmed_articles),"crossref_count":len(crossref_refs),
           "crossref_refs":crossref_refs,"pubmed_articles":pubmed_articles,
           "metrics":metrics,"bullets":bullets,"claims":claims,
-          "answer":answer,"sources":sources}
+          "answer":answer,"sources":sources,
+          "plagiarism":plagiarism,"reference_check":reference_check}
 
     analyses = [a for a in st.session_state.get("doc_analyses",[]) if a["filename"]!=filename]
     analyses.append(da)
@@ -384,7 +433,81 @@ def _render_document_analysis(da:dict)->None:
         else:
             st.info("ℹ️ No PubMed articles found.")
 
-    # 6. Source chunks
+    # 6. Plagiarism Score
+    st.markdown("### 🔍 Plagiarism Analysis")
+    plag = da.get("plagiarism",{})
+    if plag:
+        score = plag.get("score",0)
+        col_p1, col_p2, col_p3 = st.columns(3)
+        col_p1.metric("📊 Similarity Score", f"{score}%",
+                      delta="Low ✅" if score<15 else ("Medium ⚠️" if score<30 else "High 🔴"))
+        col_p2.metric("📝 Sentences Checked", plag.get("sentences_checked",0))
+        col_p3.metric("🌐 Sources Compared",  plag.get("sources_compared",0))
+        status_color = "success" if score<15 else ("warning" if score<30 else "error")
+        getattr(st, status_color)(plag.get("status",""))
+
+        matches = plag.get("matches",[])
+        if matches:
+            with st.expander(f"📋 Matched Sentences ({len(matches)})", expanded=False):
+                mrows = [{"Sentence":m["sentence"][:120],
+                          "Similarity":f"{m['similarity']:.1f}%",
+                          "Matched Source":m.get("matched_source","")[:100]}
+                         for m in matches]
+                st.dataframe(pd.DataFrame(mrows),use_container_width=True,hide_index=True)
+    else:
+        st.info("ℹ️ Plagiarism check not available.")
+
+    # 7. Reference Check
+    st.markdown("### ✅ Reference Verification (DOI Check)")
+    ref_check = da.get("reference_check",[])
+    if ref_check:
+        valid_count   = sum(1 for r in ref_check if r.get("valid"))
+        invalid_count = len(ref_check) - valid_count
+        rc1, rc2, rc3 = st.columns(3)
+        rc1.metric("📚 Total References Found", len(ref_check))
+        rc2.metric("✅ Valid DOIs",   valid_count)
+        rc3.metric("❌ Invalid/Missing", invalid_count)
+
+        ref_rows = []
+        for r in ref_check:
+            ref_rows.append({
+                "Raw Reference": r.get("raw","")[:80],
+                "DOI":           r.get("doi","N/A"),
+                "Status":        "✅ Valid" if r.get("valid") else "❌ Invalid",
+                "Title":         r.get("title","")[:60],
+                "Authors":       r.get("authors","")[:40],
+                "Year":          r.get("year",""),
+            })
+        st.dataframe(pd.DataFrame(ref_rows),use_container_width=True,hide_index=True)
+
+        # Citation generator
+        valid_refs = [r for r in ref_check if r.get("valid")]
+        if valid_refs:
+            with st.expander("📝 Citation Generator", expanded=False):
+                style = st.selectbox("Citation Style", ["APA","MLA","IEEE"], key=f"cite_{da['filename']}")
+                for r in valid_refs[:5]:
+                    citation = generate_citation(r, style)
+                    st.code(citation, language=None)
+    else:
+        st.info("ℹ️ No references found in document.")
+
+    # 8. Download Report
+    st.markdown("### 📥 Download Analysis Report")
+    try:
+        excel_bytes = generate_excel_report(da)
+        fname = da["filename"].replace(".pdf","")
+        st.download_button(
+            label="📥 Download Excel Report (.xlsx)",
+            data=excel_bytes,
+            file_name=f"{fname}_analysis_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+        st.caption("Report includes: Summary, Metrics, BioBERT Comparison, Plagiarism, References, FDA, CrossRef, PubMed")
+    except Exception as e:
+        st.warning(f"Report generation failed: {e}")
+
+    # 9. Source chunks
     if st.session_state.get("show_sources",True):
         sources=da.get("sources",[])
         if sources:
