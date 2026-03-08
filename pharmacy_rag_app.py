@@ -369,51 +369,75 @@ def _render_document_analysis(da:dict)->None:
     if bullets:
         from collections import defaultdict
 
-        # ── AI-generated paragraph summary via Claude API ──
-        def _generate_ai_summary(bullets_list, doc_filename):
+        # ── Claude API summary ──
+        def _generate_claude_summary(bullets_list):
             try:
                 import requests as req
-                # Collect top content from bullets
-                top_bullets = sorted(bullets_list, key=lambda x: x["relevance"], reverse=True)[:8]
-                content_text = " ".join([
-                    re.sub(r"\*\*(.+?)\*\*", r"\1", b.get("raw") or b["text"])
-                    for b in top_bullets
-                ])
-                prompt = f"""You are a pharmaceutical expert. Based on the following extracted content from a research document, write a clear, detailed, professional summary paragraph (4-6 sentences) that a non-technical reader can understand.
 
-Focus on:
-- What drug/topic is being discussed
-- Key mechanisms or effects
-- Important clinical findings
-- Any notable benefits or risks
+                # Clean content — author/address lines filter karo
+                top_bullets = sorted(bullets_list, key=lambda x: x["relevance"], reverse=True)[:10]
+                skip_words  = ["department","university","email","tel ","correspondence",
+                               "india;","malaysia;","bangladesh;","@gmail","rajkot","gujarat"]
+                clean_sents = []
+                for b in top_bullets:
+                    raw = re.sub(r"\*\*(.+?)\*\*", r"\1", b.get("raw") or b["text"])
+                    if len(raw.split()) > 8 and not any(sw in raw.lower() for sw in skip_words):
+                        clean_sents.append(raw.strip())
 
-Extracted content:
-{content_text[:3000]}
+                content_text = " ".join(clean_sents)[:3000]
 
-Write ONLY the summary paragraph, no headings or bullet points."""
+                api_key = os.environ.get("ANTHROPIC_API_KEY","")
+                if not api_key:
+                    raise ValueError("No API key")
 
-                response = req.post(
+                resp = req.post(
                     "https://api.anthropic.com/v1/messages",
-                    headers={"Content-Type": "application/json"},
+                    headers={
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    },
                     json={
-                        "model": "claude-sonnet-4-20250514",
-                        "max_tokens": 300,
-                        "messages": [{"role": "user", "content": prompt}]
+                        "model": "claude-haiku-4-5-20251001",
+                        "max_tokens": 350,
+                        "messages": [{
+                            "role": "user",
+                            "content": (
+                                "You are a pharmaceutical expert. Based on the following extracted content "
+                                "from a research paper, write a clear, detailed, professional summary "
+                                "(4-6 sentences) that a non-technical reader can understand.\n\n"
+                                "Focus on:\n"
+                                "- What drug/topic is discussed\n"
+                                "- Key mechanism of action\n"
+                                "- Important clinical findings or benefits\n"
+                                "- Any notable risks or contraindications\n\n"
+                                f"Content:\n{content_text}\n\n"
+                                "Write ONLY the summary paragraph. No headings, no bullet points."
+                            )
+                        }]
                     },
                     timeout=20
                 )
-                if response.status_code == 200:
-                    data = response.json()
-                    return data["content"][0]["text"].strip()
+                if resp.status_code == 200:
+                    return resp.json()["content"][0]["text"].strip()
+                else:
+                    logger.warning("Claude API error %s: %s", resp.status_code, resp.text)
+
             except Exception as e:
-                logger.warning("AI summary error: %s", e)
-            # Fallback: join top sentences cleanly
+                logger.warning("Claude summary error: %s", e)
+
+            # Fallback: extractive
             top3 = sorted(bullets_list, key=lambda x: x["relevance"], reverse=True)[:3]
-            sentences = [re.sub(r"\*\*(.+?)\*\*", r"\1", b.get("raw") or b["text"]) for b in top3]
-            return ". ".join(s.strip().rstrip(".") for s in sentences if s.strip()) + "."
+            skip_words = ["department","university","email","tel ","correspondence","@gmail"]
+            sents = []
+            for b in top3:
+                raw = re.sub(r"\*\*(.+?)\*\*", r"\1", b.get("raw") or b["text"])
+                if not any(sw in raw.lower() for sw in skip_words):
+                    sents.append(raw.strip().rstrip("."))
+            return ". ".join(sents) + "." if sents else "Summary not available."
 
         with st.spinner("✍️ Generating AI summary..."):
-            paragraph = _generate_ai_summary(bullets, da["filename"])
+            paragraph = _generate_claude_summary(bullets)
 
         st.markdown(
             f'<div style="background:#1a3a2a;border-left:5px solid #2ecc71;border-radius:8px;'
